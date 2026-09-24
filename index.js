@@ -7,6 +7,8 @@ const defaults = {
     enabled: true,
     autoSwitch: true,
     scanUserMessages: true,
+    // Folder name under SillyTavern's data/<user>/user/images/. Survives reloads, unlike the browser picker.
+    serverFolder: 'outfits',
     width: 320,
     visible: true,
 };
@@ -21,7 +23,11 @@ let pendingHandle = null;
 
 function settings() {
     const store = ctx().extensionSettings;
-    store[MODULE] = Object.assign({}, defaults, store[MODULE]);
+    // Fill in missing defaults in place; replacing the object would orphan earlier references.
+    store[MODULE] ??= {};
+    for (const [key, value] of Object.entries(defaults)) {
+        if (store[MODULE][key] === undefined) store[MODULE][key] = value;
+    }
     return store[MODULE];
 }
 
@@ -96,19 +102,17 @@ async function outfitName(file) {
 
 // ---------- loading a folder ----------
 
-async function loadFiles(files, label) {
-    outfits.forEach(o => URL.revokeObjectURL(o.url));
+function setOutfits(entries, label) {
+    outfits.forEach(o => o.url.startsWith('blob:') && URL.revokeObjectURL(o.url));
     const loaded = [];
     const seen = new Map();
-    for (const file of files) {
-        if (!IMAGE_EXT.test(file.name)) continue;
-        let name = await outfitName(file);
+    for (let { name, url } of entries) {
         const count = (seen.get(name) ?? 0) + 1;
         seen.set(name, count);
         if (count > 1) name = `${name} ${count}`;
         // "Fluffy witch, Paw witch.png" -> shown as "Fluffy witch", triggered by either key.
         const keys = name.split(',').map(k => k.trim()).filter(Boolean);
-        loaded.push({ name, label: keys[0] ?? name, keys, url: URL.createObjectURL(file) });
+        loaded.push({ name, label: keys[0] ?? name, keys, url });
     }
     loaded.sort((a, b) => a.name.localeCompare(b.name));
     outfits = loaded;
@@ -116,6 +120,38 @@ async function loadFiles(files, label) {
     renderSelect();
     renderStatus();
     restoreForChat();
+}
+
+async function loadFiles(files, label) {
+    const entries = [];
+    for (const file of files) {
+        if (!IMAGE_EXT.test(file.name)) continue;
+        entries.push({ name: await outfitName(file), url: URL.createObjectURL(file) });
+    }
+    setOutfits(entries, label);
+}
+
+async function loadFromServer(folder) {
+    try {
+        const response = await fetch('/api/images/list', {
+            method: 'POST',
+            headers: ctx().getRequestHeaders(),
+            body: JSON.stringify({ folder, sortField: 'name', sortOrder: 'asc', type: 1 }),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const files = await response.json();
+        const entries = files
+            .filter(f => IMAGE_EXT.test(f))
+            .map(f => ({
+                name: f.replace(IMAGE_EXT, ''),
+                url: `user/images/${encodeURIComponent(folder)}/${encodeURIComponent(f)}`,
+            }));
+        pendingHandle = null;
+        setOutfits(entries, `user/images/${folder}`);
+    } catch (err) {
+        console.error('[Outfit Viewer]', err);
+        $('#outfit_viewer_status').text(`Couldn't load user/images/${folder}: ${err.message}`);
+    }
 }
 
 async function loadFromHandle(handle) {
@@ -152,6 +188,8 @@ async function reconnect() {
 }
 
 async function restoreFolder() {
+    const serverFolder = settings().serverFolder.trim();
+    if (serverFolder) return loadFromServer(serverFolder);
     if (!window.showDirectoryPicker) return renderStatus();
     const handle = await dbGet('folder');
     if (!handle) return renderStatus();
@@ -237,7 +275,8 @@ function scanMessage(id) {
 function renderSelect() {
     const select = $('#outfit_viewer_select').empty();
     select.append($('<option>').val('').text(outfits.length ? '— none —' : '— no folder —'));
-    for (const o of outfits) select.append($('<option>').val(o.name).text(o.label));
+    // Show every key, so it's clear which words bring each outfit up.
+    for (const o of outfits) select.append($('<option>').val(o.name).text(o.keys.join(', ')));
     select.val(current ?? '');
 }
 
@@ -383,6 +422,12 @@ function buildSettings() {
                     <label>Panel width: <span id="outfit_viewer_width_val"></span>px
                         <input id="outfit_viewer_width" type="range" min="150" max="700" step="10">
                     </label>
+                    <label for="outfit_viewer_server_folder">SillyTavern image folder (in data/default-user/user/images/):</label>
+                    <div class="flex-container">
+                        <input id="outfit_viewer_server_folder" class="text_pole flex1" type="text" placeholder="e.g. outfits-femcraft">
+                        <div id="outfit_viewer_server_load" class="menu_button">Load</div>
+                    </div>
+                    <small>Remembered across reloads. Leave empty to use a folder picked from your computer instead:</small>
                     <div class="flex-container">
                         <div id="outfit_viewer_pick" class="menu_button">Choose outfit folder</div>
                         <div id="outfit_viewer_reconnect" class="menu_button">Reconnect folder</div>
@@ -405,7 +450,20 @@ function buildSettings() {
         $('#outfit_viewer_width_val').text(s.width);
         save();
     });
-    $('#outfit_viewer_pick').on('click', pickFolder);
+    const loadServer = () => {
+        s.serverFolder = String($('#outfit_viewer_server_folder').val() ?? '').trim();
+        ctx().saveSettingsDebounced();
+        if (s.serverFolder) loadFromServer(s.serverFolder);
+    };
+    $('#outfit_viewer_server_folder').val(s.serverFolder).on('keydown', (e) => { if (e.key === 'Enter') loadServer(); });
+    $('#outfit_viewer_server_load').on('click', loadServer);
+    $('#outfit_viewer_pick').on('click', () => {
+        // Picking a local folder takes over from the server folder.
+        s.serverFolder = '';
+        $('#outfit_viewer_server_folder').val('');
+        ctx().saveSettingsDebounced();
+        pickFolder();
+    });
     $('#outfit_viewer_reconnect').on('click', reconnect);
     $('#outfit_viewer_file_input').on('change', function () {
         const files = Array.from(this.files ?? []);

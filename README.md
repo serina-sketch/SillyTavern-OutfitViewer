@@ -4,14 +4,18 @@ A SillyTavern extension that shows an outfit image in a panel to the right of th
 
 ## Setup
 
-1. Put all your outfit images in one folder.
-2. Open Extensions → Outfit Viewer → **Choose outfit folder** and select that folder.
-3. On Chrome/Edge the folder is remembered. After a browser restart you may need to click **Reconnect folder** once. On Firefox you pick the folder again each session.
+**Recommended: a SillyTavern image folder.** It's remembered across reloads in every browser.
+
+1. Put the images in `SillyTavern/data/default-user/user/images/<folder>/`. To keep them somewhere else, link that folder there instead. On Windows (PowerShell):
+   `New-Item -ItemType Junction -Path "...\SillyTavern\data\default-user\user\images\outfits" -Target "C:\path\to\your\outfits"`
+2. The viewer loads `user/images/outfits` by default. To use a different folder, go to Extensions → Outfit Viewer, type its name and click **Load**.
+
+**Alternative: a folder picked from your computer.** Click **Choose outfit folder**. Only Chrome and Edge can remember it; Brave (which turns that browser feature off) and Firefox ask again after every reload.
 
 ## Outfit names
 
 - An image's outfit name is its filename without the extension: `Witch.png` → "Witch".
-- Several keys can share one image, separated by commas: `Fluffy witch, Paw witch.png` is shown as "Fluffy witch" and switches on either phrase.
+- Several keys can share one image, separated by commas: `Fluffy witch, Paw witch.png` is listed with both keys in the dropdown and switches on either phrase.
 - Files still carrying an image generator's long automatic name (containing "masterpiece", or starting with a long number) are named from the prompt stored in the PNG instead. The first word or two after the style tags becomes the name, e.g. `**Witch <weight[1.1]:cosplay>.**` → "Witch".
 - If two images end up with the same name, the second becomes "Name 2", and so on. Rename a file to give it a proper name.
 
