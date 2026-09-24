@@ -1,0 +1,357 @@
+const MODULE = 'outfitViewer';
+const DB_NAME = 'outfit-viewer';
+const DB_STORE = 'handles';
+const IMAGE_EXT = /\.(png|jpe?g|webp|gif|avif)$/i;
+
+const defaults = {
+    enabled: true,
+    autoSwitch: true,
+    scanUserMessages: true,
+    width: 320,
+    visible: true,
+};
+
+const ctx = () => SillyTavern.getContext();
+
+/** @type {{name: string, url: string}[]} */
+let outfits = [];
+let current = null;
+let folderName = '';
+let pendingHandle = null;
+
+function settings() {
+    const store = ctx().extensionSettings;
+    store[MODULE] = Object.assign({}, defaults, store[MODULE]);
+    return store[MODULE];
+}
+
+// ---------- persisting the folder handle (Chrome/Edge) ----------
+
+function openDb() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(DB_STORE);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+
+async function dbGet(key) {
+    const db = await openDb();
+    return new Promise((resolve) => {
+        const req = db.transaction(DB_STORE).objectStore(DB_STORE).get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(undefined);
+    });
+}
+
+async function dbSet(key, value) {
+    const db = await openDb();
+    return new Promise((resolve) => {
+        const tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).put(value, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+    });
+}
+
+// ---------- outfit names ----------
+
+// Generated images keep their prompt in a PNG text chunk; the outfit name is the first
+// word(s) of the line after the style tags, e.g. "**Witch <weight[1.1]:cosplay>.**".
+async function nameFromPngMetadata(file) {
+    if (!/\.png$/i.test(file.name)) return null;
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const view = new DataView(buf.buffer);
+    const decoder = new TextDecoder();
+    let pos = 8;
+    while (pos + 8 <= buf.length) {
+        const len = view.getUint32(pos);
+        const type = decoder.decode(buf.subarray(pos + 4, pos + 8));
+        if (type === 'IDAT' || type === 'IEND') break;
+        if (type === 'tEXt' || type === 'iTXt') {
+            const data = decoder.decode(buf.subarray(pos + 8, pos + 8 + len));
+            let prompt = data.slice(data.indexOf('\0') + 1);
+            try {
+                const json = JSON.parse(prompt);
+                prompt = json?.sui_image_params?.prompt ?? json?.prompt ?? prompt;
+            } catch { /* A1111-style plain text */ }
+            const match = String(prompt).match(/\n\**\s*([A-Z][A-Za-z]*(?: [a-z]+)?)\s*(?:<|\.|\*)/);
+            if (match) return match[1];
+        }
+        pos += 12 + len;
+    }
+    return null;
+}
+
+async function outfitName(file) {
+    const stem = file.name.replace(IMAGE_EXT, '');
+    // Files straight out of an image generator have long auto-generated names.
+    if (/masterpiece|^\d{5,}-/i.test(stem)) {
+        const fromMeta = await nameFromPngMetadata(file);
+        if (fromMeta) return fromMeta;
+    }
+    return stem;
+}
+
+// ---------- loading a folder ----------
+
+async function loadFiles(files, label) {
+    outfits.forEach(o => URL.revokeObjectURL(o.url));
+    const loaded = [];
+    const seen = new Map();
+    for (const file of files) {
+        if (!IMAGE_EXT.test(file.name)) continue;
+        let name = await outfitName(file);
+        const count = (seen.get(name) ?? 0) + 1;
+        seen.set(name, count);
+        if (count > 1) name = `${name} ${count}`;
+        loaded.push({ name, url: URL.createObjectURL(file) });
+    }
+    loaded.sort((a, b) => a.name.localeCompare(b.name));
+    outfits = loaded;
+    folderName = label;
+    renderSelect();
+    renderStatus();
+    restoreForChat();
+}
+
+async function loadFromHandle(handle) {
+    const files = [];
+    for await (const entry of handle.values()) {
+        if (entry.kind === 'file') files.push(await entry.getFile());
+    }
+    await loadFiles(files, handle.name);
+}
+
+async function pickFolder() {
+    if (window.showDirectoryPicker) {
+        try {
+            const handle = await window.showDirectoryPicker({ id: 'outfit-viewer', mode: 'read' });
+            await dbSet('folder', handle);
+            pendingHandle = null;
+            await loadFromHandle(handle);
+        } catch (err) {
+            if (err.name !== 'AbortError') console.error('[Outfit Viewer]', err);
+        }
+        return;
+    }
+    // Firefox fallback: no persistent handle, re-pick each session.
+    $('#outfit_viewer_file_input').trigger('click');
+}
+
+async function reconnect() {
+    if (!pendingHandle) return;
+    if (await pendingHandle.requestPermission({ mode: 'read' }) === 'granted') {
+        const handle = pendingHandle;
+        pendingHandle = null;
+        await loadFromHandle(handle);
+    }
+}
+
+async function restoreFolder() {
+    if (!window.showDirectoryPicker) return renderStatus();
+    const handle = await dbGet('folder');
+    if (!handle) return renderStatus();
+    const perm = await handle.queryPermission({ mode: 'read' });
+    if (perm === 'granted') return loadFromHandle(handle);
+    // Browsers only re-grant access after a click.
+    pendingHandle = handle;
+    renderStatus();
+}
+
+// ---------- showing an outfit ----------
+
+function show(name, { persist = true } = {}) {
+    const outfit = outfits.find(o => o.name.toLowerCase() === String(name).toLowerCase());
+    current = outfit ? outfit.name : null;
+    $('#outfit_viewer_img').attr('src', outfit ? outfit.url : '').toggle(!!outfit);
+    $('#outfit_viewer_empty').toggle(!outfit);
+    $('#outfit_viewer_select').val(current ?? '');
+    if (persist) {
+        const { chatMetadata, saveMetadataDebounced } = ctx();
+        if (chatMetadata) {
+            chatMetadata[MODULE] = current;
+            saveMetadataDebounced();
+        }
+    }
+}
+
+function restoreForChat() {
+    const saved = ctx().chatMetadata?.[MODULE];
+    show(saved ?? null, { persist: false });
+}
+
+function escapeRegex(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Returns the outfit mentioned last in the text, preferring longer names at the same spot
+// ("Fluffy witch" beats "witch").
+function findOutfit(text) {
+    let best = null;
+    for (const o of outfits) {
+        const re = new RegExp(`(?<![\\w])${escapeRegex(o.name)}(?![\\w])`, 'gi');
+        let m;
+        while ((m = re.exec(text))) {
+            const end = m.index + m[0].length;
+            if (!best || end > best.end || (end === best.end && o.name.length > best.name.length)) {
+                best = { name: o.name, end };
+            }
+        }
+    }
+    return best?.name ?? null;
+}
+
+function scanText(text) {
+    const s = settings();
+    if (!s.enabled || !s.autoSwitch || !text || !outfits.length) return;
+    const found = findOutfit(text);
+    if (found && found !== current) show(found);
+}
+
+function scanMessage(id) {
+    const msg = ctx().chat?.[id];
+    if (!msg) return;
+    if (msg.is_user && !settings().scanUserMessages) return;
+    scanText(msg.mes);
+}
+
+// ---------- UI ----------
+
+function renderSelect() {
+    const select = $('#outfit_viewer_select').empty();
+    select.append($('<option>').val('').text(outfits.length ? '— none —' : '— no folder —'));
+    for (const o of outfits) select.append($('<option>').val(o.name).text(o.name));
+    select.val(current ?? '');
+}
+
+function renderStatus() {
+    const status = $('#outfit_viewer_status');
+    const reconnectBtn = $('#outfit_viewer_reconnect');
+    if (pendingHandle) {
+        status.text(`Folder "${pendingHandle.name}" needs permission again.`);
+        reconnectBtn.show();
+    } else if (folderName) {
+        status.text(`Folder "${folderName}": ${outfits.length} outfit(s).`);
+        reconnectBtn.hide();
+    } else {
+        status.text('No folder selected.');
+        reconnectBtn.hide();
+    }
+}
+
+function applyLayout() {
+    const s = settings();
+    $('#outfit_viewer_panel')
+        .css('width', `${s.width}px`)
+        .toggle(s.enabled && s.visible);
+    $('#outfit_viewer_toggle').toggle(s.enabled && !s.visible);
+}
+
+function buildPanel() {
+    const panel = $(`
+        <div id="outfit_viewer_panel">
+            <div class="outfit_viewer_header">
+                <select id="outfit_viewer_select" title="Pick an outfit"></select>
+                <div id="outfit_viewer_hide" class="fa-solid fa-xmark" title="Hide"></div>
+            </div>
+            <img id="outfit_viewer_img" alt="" />
+            <div id="outfit_viewer_empty">No outfit</div>
+        </div>
+        <div id="outfit_viewer_toggle" class="fa-solid fa-shirt" title="Show outfit"></div>
+    `);
+    $('body').append(panel);
+    $('#outfit_viewer_select').on('change', function () { show(this.value || null); });
+    $('#outfit_viewer_hide').on('click', () => { settings().visible = false; ctx().saveSettingsDebounced(); applyLayout(); });
+    $('#outfit_viewer_toggle').on('click', () => { settings().visible = true; ctx().saveSettingsDebounced(); applyLayout(); });
+    $('#outfit_viewer_empty').show();
+    $('#outfit_viewer_img').hide();
+}
+
+function buildSettings() {
+    const s = settings();
+    const html = $(`
+        <div class="outfit_viewer_settings">
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <b>Outfit Viewer</b>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <label class="checkbox_label"><input id="outfit_viewer_enabled" type="checkbox"> Enabled</label>
+                    <label class="checkbox_label"><input id="outfit_viewer_auto" type="checkbox"> Switch automatically when an outfit is mentioned</label>
+                    <label class="checkbox_label"><input id="outfit_viewer_user" type="checkbox"> Also scan my own messages</label>
+                    <label>Panel width: <span id="outfit_viewer_width_val"></span>px
+                        <input id="outfit_viewer_width" type="range" min="150" max="700" step="10">
+                    </label>
+                    <div class="flex-container">
+                        <div id="outfit_viewer_pick" class="menu_button">Choose outfit folder</div>
+                        <div id="outfit_viewer_reconnect" class="menu_button">Reconnect folder</div>
+                    </div>
+                    <small id="outfit_viewer_status"></small>
+                    <input id="outfit_viewer_file_input" type="file" webkitdirectory multiple hidden>
+                </div>
+            </div>
+        </div>
+    `);
+    $('#extensions_settings2').append(html);
+
+    const save = () => { ctx().saveSettingsDebounced(); applyLayout(); };
+    $('#outfit_viewer_enabled').prop('checked', s.enabled).on('change', function () { s.enabled = this.checked; save(); });
+    $('#outfit_viewer_auto').prop('checked', s.autoSwitch).on('change', function () { s.autoSwitch = this.checked; save(); });
+    $('#outfit_viewer_user').prop('checked', s.scanUserMessages).on('change', function () { s.scanUserMessages = this.checked; save(); });
+    $('#outfit_viewer_width_val').text(s.width);
+    $('#outfit_viewer_width').val(s.width).on('input', function () {
+        s.width = Number(this.value);
+        $('#outfit_viewer_width_val').text(s.width);
+        save();
+    });
+    $('#outfit_viewer_pick').on('click', pickFolder);
+    $('#outfit_viewer_reconnect').on('click', reconnect);
+    $('#outfit_viewer_file_input').on('change', function () {
+        const files = Array.from(this.files ?? []);
+        const label = files[0]?.webkitRelativePath?.split('/')[0] ?? 'folder';
+        loadFiles(files, label);
+    });
+}
+
+function registerCommand() {
+    const { SlashCommandParser, SlashCommand, SlashCommandArgument } = ctx();
+    if (!SlashCommandParser?.addCommandObject) return;
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'outfit',
+        helpString: 'Show an outfit in the Outfit Viewer panel. No argument clears it.',
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({ description: 'outfit name', isRequired: false }),
+        ],
+        callback: (_args, value) => {
+            show(String(value ?? '').trim() || null);
+            return current ?? '';
+        },
+    }));
+}
+
+// ---------- startup ----------
+
+jQuery(async () => {
+    buildPanel();
+    buildSettings();
+    applyLayout();
+    renderSelect();
+    registerCommand();
+
+    const { eventSource, event_types } = ctx();
+    let streamTimer = null;
+    eventSource.on(event_types.STREAM_TOKEN_RECEIVED, (text) => {
+        if (streamTimer) return;
+        streamTimer = setTimeout(() => { streamTimer = null; scanText(text); }, 250);
+    });
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, scanMessage);
+    eventSource.on(event_types.USER_MESSAGE_RENDERED, scanMessage);
+    eventSource.on(event_types.MESSAGE_EDITED, scanMessage);
+    eventSource.on(event_types.MESSAGE_SWIPED, scanMessage);
+    eventSource.on(event_types.CHAT_CHANGED, restoreForChat);
+
+    await restoreFolder();
+});

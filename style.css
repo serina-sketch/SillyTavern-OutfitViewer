@@ -1,0 +1,67 @@
+#outfit_viewer_panel {
+    position: fixed;
+    top: calc(var(--topBarBlockSize, 50px) + 10px);
+    right: 10px;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px;
+    max-height: calc(100vh - var(--topBarBlockSize, 50px) - 20px);
+    background: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px));
+    box-shadow: 0 4px 12px #0005;
+}
+
+.outfit_viewer_header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#outfit_viewer_select {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+}
+
+#outfit_viewer_hide {
+    cursor: pointer;
+    padding: 4px 6px;
+    opacity: 0.7;
+}
+
+#outfit_viewer_hide:hover {
+    opacity: 1;
+}
+
+#outfit_viewer_img {
+    width: 100%;
+    min-height: 0;
+    object-fit: contain;
+    border-radius: 6px;
+}
+
+#outfit_viewer_empty {
+    padding: 20px 0;
+    text-align: center;
+    opacity: 0.6;
+}
+
+#outfit_viewer_toggle {
+    position: fixed;
+    top: calc(var(--topBarBlockSize, 50px) + 10px);
+    right: 10px;
+    z-index: 30;
+    padding: 10px;
+    cursor: pointer;
+    background: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 50%;
+}
+
+#outfit_viewer_reconnect {
+    display: none;
+}

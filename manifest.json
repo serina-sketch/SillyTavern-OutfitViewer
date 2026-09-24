@@ -1,0 +1,12 @@
+{
+    "display_name": "Outfit Viewer",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "serina-sketch",
+    "version": "0.1.0",
+    "homePage": "https://github.com/serina-sketch/SillyTavern-OutfitViewer",
+    "auto_update": true
+}
