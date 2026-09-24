@@ -7,6 +7,7 @@ const defaults = {
     enabled: true,
     autoSwitch: true,
     scanUserMessages: true,
+    showDescription: true,
     // Folder name under SillyTavern's data/<user>/user/images/. Survives reloads, unlike the browser picker.
     serverFolder: 'outfits',
     width: 320,
@@ -65,10 +66,11 @@ async function dbSet(key, value) {
 
 // Generated images keep their prompt in a PNG text chunk; the outfit name is the first
 // word(s) of the line after the style tags, e.g. "**Witch <weight[1.1]:cosplay>.**".
-async function nameFromPngMetadata(file) {
-    if (!/\.png$/i.test(file.name)) return null;
-    const buf = new Uint8Array(await file.arrayBuffer());
-    const view = new DataView(buf.buffer);
+// Returns the generation prompt stored in a PNG's text chunks (SwarmUI JSON or A1111 plain text).
+function promptFromPng(bytes) {
+    const buf = new Uint8Array(bytes);
+    if (buf[0] !== 0x89 || buf[1] !== 0x50) return null;
+    const view = new DataView(buf.buffer, buf.byteOffset);
     const decoder = new TextDecoder();
     let pos = 8;
     while (pos + 8 <= buf.length) {
@@ -81,13 +83,45 @@ async function nameFromPngMetadata(file) {
             try {
                 const json = JSON.parse(prompt);
                 prompt = json?.sui_image_params?.prompt ?? json?.prompt ?? prompt;
-            } catch { /* A1111-style plain text */ }
-            const match = String(prompt).match(/\n\**\s*([A-Z][A-Za-z]*(?: [a-z]+)?)\s*(?:<|\.|\*)/);
-            if (match) return match[1];
+            } catch {
+                prompt = prompt.split('\nNegative prompt:')[0];
+            }
+            if (typeof prompt === 'string' && prompt.trim()) return prompt;
         }
         pos += 12 + len;
     }
     return null;
+}
+
+// The outfit description is everything after the **title**; older prompts have an unbolded
+// "Title <weight...>." at the start of the second line instead.
+function descriptionFromPrompt(prompt) {
+    if (!prompt) return '';
+    const bold = prompt.match(/\*\*[^*]+\*\*/);
+    if (bold) return prompt.slice(bold.index + bold[0].length).trim();
+    const line = prompt.split('\n').slice(1).join('\n');
+    const plain = line.match(/^[^\n.]+?(?:<[^>]*>)?\s*\.\s*/);
+    return (plain ? line.slice(plain[0].length) : line).trim();
+}
+
+async function nameFromPngMetadata(file) {
+    if (!/\.png$/i.test(file.name)) return null;
+    const prompt = promptFromPng(await file.arrayBuffer());
+    const match = prompt?.match(/\n\**\s*([A-Z][A-Za-z]*(?: [a-z]+)?)\s*(?:<|\.|\*)/);
+    return match ? match[1] : null;
+}
+
+// Description of an outfit, read from its image the first time it's shown, then cached.
+async function descriptionOf(outfit) {
+    if (outfit.description !== undefined) return outfit.description;
+    try {
+        const response = await fetch(outfit.url);
+        outfit.description = descriptionFromPrompt(promptFromPng(await response.arrayBuffer()));
+    } catch (err) {
+        console.warn('[Outfit Viewer] could not read description', err);
+        outfit.description = '';
+    }
+    return outfit.description;
 }
 
 async function outfitName(file) {
@@ -140,11 +174,13 @@ async function loadFromServer(folder) {
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const files = await response.json();
+        // Cache-bust so an image replaced under the same name shows its new version.
+        const stamp = Date.now();
         const entries = files
             .filter(f => IMAGE_EXT.test(f))
             .map(f => ({
                 name: f.replace(IMAGE_EXT, ''),
-                url: `user/images/${encodeURIComponent(folder)}/${encodeURIComponent(f)}`,
+                url: `user/images/${encodeURIComponent(folder)}/${encodeURIComponent(f)}?v=${stamp}`,
             }));
         pendingHandle = null;
         setOutfits(entries, `user/images/${folder}`);
@@ -187,6 +223,24 @@ async function reconnect() {
     }
 }
 
+// Re-read the current folder so renamed or newly added images show up.
+async function refresh() {
+    const icon = $('#outfit_viewer_refresh').addClass('fa-spin');
+    try {
+        const serverFolder = settings().serverFolder.trim();
+        if (serverFolder) return await loadFromServer(serverFolder);
+        const handle = window.showDirectoryPicker ? await dbGet('folder') : null;
+        if (handle && await handle.requestPermission({ mode: 'read' }) === 'granted') {
+            pendingHandle = null;
+            return await loadFromHandle(handle);
+        }
+        // A folder picked through the plain file input can't be re-read; pick it again.
+        await pickFolder();
+    } finally {
+        icon.removeClass('fa-spin');
+    }
+}
+
 async function restoreFolder() {
     const serverFolder = settings().serverFolder.trim();
     if (serverFolder) return loadFromServer(serverFolder);
@@ -210,6 +264,7 @@ function show(name, { persist = true } = {}) {
     $('#outfit_viewer_img').attr('src', outfit ? outfit.url : '').toggle(!!outfit);
     $('#outfit_viewer_empty').toggle(!outfit);
     $('#outfit_viewer_select').val(current ?? '');
+    renderDescription(outfit);
     if (persist) {
         const { chatMetadata, saveMetadataDebounced } = ctx();
         if (chatMetadata) {
@@ -217,6 +272,15 @@ function show(name, { persist = true } = {}) {
             saveMetadataDebounced();
         }
     }
+}
+
+async function renderDescription(outfit) {
+    const box = $('#outfit_viewer_desc');
+    if (!outfit || !settings().showDescription) return box.hide().text('');
+    const text = await descriptionOf(outfit);
+    // A later switch may have happened while this one was loading.
+    if (current !== outfit.name) return;
+    box.text(text).toggle(!!text).scrollTop(0);
 }
 
 function restoreForChat() {
@@ -326,7 +390,7 @@ function enableDragging() {
     const panel = document.getElementById('outfit_viewer_panel');
     const header = panel.querySelector('.outfit_viewer_header');
     header.addEventListener('pointerdown', (e) => {
-        if (e.button !== 0 || e.target.closest('select, #outfit_viewer_hide')) return;
+        if (e.button !== 0 || e.target.closest('select, .outfit_viewer_icon')) return;
         e.preventDefault();
         const rect = panel.getBoundingClientRect();
         const offsetX = e.clientX - rect.left;
@@ -349,7 +413,7 @@ function enableDragging() {
     });
     // Double-click the header to snap back to the default spot.
     header.addEventListener('dblclick', (e) => {
-        if (e.target.closest('select, #outfit_viewer_hide')) return;
+        if (e.target.closest('select, .outfit_viewer_icon')) return;
         delete settings().position;
         ctx().saveSettingsDebounced();
         applyLayout();
@@ -389,15 +453,18 @@ function buildPanel() {
             <div class="outfit_viewer_header">
                 <div class="outfit_viewer_grip fa-solid fa-grip-vertical" title="Drag to move · double-click to reset"></div>
                 <select id="outfit_viewer_select" title="Pick an outfit"></select>
-                <div id="outfit_viewer_hide" class="fa-solid fa-xmark" title="Hide"></div>
+                <div id="outfit_viewer_refresh" class="outfit_viewer_icon fa-solid fa-rotate" title="Reload folder"></div>
+                <div id="outfit_viewer_hide" class="outfit_viewer_icon fa-solid fa-xmark" title="Hide"></div>
             </div>
             <img id="outfit_viewer_img" alt="" />
             <div id="outfit_viewer_empty">No outfit</div>
+            <div id="outfit_viewer_desc"></div>
         </div>
         <div id="outfit_viewer_toggle" class="fa-solid fa-shirt" title="Show outfit"></div>
     `);
     $('body').append(panel);
     $('#outfit_viewer_select').on('change', function () { show(this.value || null); });
+    $('#outfit_viewer_refresh').on('click', refresh);
     $('#outfit_viewer_hide').on('click', () => { settings().visible = false; ctx().saveSettingsDebounced(); applyLayout(); });
     $('#outfit_viewer_toggle').on('click', () => { settings().visible = true; ctx().saveSettingsDebounced(); applyLayout(); });
     $('#outfit_viewer_empty').show();
@@ -419,6 +486,7 @@ function buildSettings() {
                     <label class="checkbox_label"><input id="outfit_viewer_enabled" type="checkbox"> Enabled</label>
                     <label class="checkbox_label"><input id="outfit_viewer_auto" type="checkbox"> Switch automatically when an outfit is mentioned</label>
                     <label class="checkbox_label"><input id="outfit_viewer_user" type="checkbox"> Also scan my own messages</label>
+                    <label class="checkbox_label"><input id="outfit_viewer_desc_toggle" type="checkbox"> Show the outfit description under the image</label>
                     <label>Panel width: <span id="outfit_viewer_width_val"></span>px
                         <input id="outfit_viewer_width" type="range" min="150" max="700" step="10">
                     </label>
@@ -444,6 +512,11 @@ function buildSettings() {
     $('#outfit_viewer_enabled').prop('checked', s.enabled).on('change', function () { s.enabled = this.checked; save(); });
     $('#outfit_viewer_auto').prop('checked', s.autoSwitch).on('change', function () { s.autoSwitch = this.checked; save(); });
     $('#outfit_viewer_user').prop('checked', s.scanUserMessages).on('change', function () { s.scanUserMessages = this.checked; save(); });
+    $('#outfit_viewer_desc_toggle').prop('checked', s.showDescription).on('change', function () {
+        s.showDescription = this.checked;
+        save();
+        renderDescription(outfits.find(o => o.name === current));
+    });
     $('#outfit_viewer_width_val').text(s.width);
     $('#outfit_viewer_width').val(s.width).on('input', function () {
         s.width = Number(this.value);

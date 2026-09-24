@@ -23,6 +23,8 @@ A SillyTavern extension that shows an outfit image in a panel to the right of th
 
 - Whenever a message mentions an outfit name as a whole word (case-insensitive), the panel switches to it. If several are mentioned, the last one wins, and longer names beat shorter ones at the same spot, so "Fluffy witch" beats "witch".
 - The dropdown at the top of the panel picks an outfit by hand.
+- Under the image, a text box shows the outfit's description: the text after the `**title**` in the prompt saved inside the PNG. It can be turned off in the settings.
+- The ↻ button re-reads the folder, picking up renamed, added or replaced images without reloading the page.
 - With the mouse over the panel, the scroll wheel or the left/right arrow keys flip to the previous/next outfit.
 - Drag the panel by its header (the grip icon) to move it; double-click the header to put it back in the top-right corner.
 - `/outfit Name` shows an outfit; `/outfit` with no name clears it.
