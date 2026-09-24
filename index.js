@@ -106,7 +106,9 @@ async function loadFiles(files, label) {
         const count = (seen.get(name) ?? 0) + 1;
         seen.set(name, count);
         if (count > 1) name = `${name} ${count}`;
-        loaded.push({ name, url: URL.createObjectURL(file) });
+        // "Fluffy witch, Paw witch.png" -> shown as "Fluffy witch", triggered by either key.
+        const keys = name.split(',').map(k => k.trim()).filter(Boolean);
+        loaded.push({ name, label: keys[0] ?? name, keys, url: URL.createObjectURL(file) });
     }
     loaded.sort((a, b) => a.name.localeCompare(b.name));
     outfits = loaded;
@@ -163,7 +165,9 @@ async function restoreFolder() {
 // ---------- showing an outfit ----------
 
 function show(name, { persist = true } = {}) {
-    const outfit = outfits.find(o => o.name.toLowerCase() === String(name).toLowerCase());
+    const wanted = String(name).toLowerCase();
+    const outfit = outfits.find(o => o.name.toLowerCase() === wanted)
+        ?? outfits.find(o => o.keys.some(k => k.toLowerCase() === wanted));
     current = outfit ? outfit.name : null;
     $('#outfit_viewer_img').attr('src', outfit ? outfit.url : '').toggle(!!outfit);
     $('#outfit_viewer_empty').toggle(!outfit);
@@ -191,16 +195,27 @@ function escapeRegex(s) {
 function findOutfit(text) {
     let best = null;
     for (const o of outfits) {
-        const re = new RegExp(`(?<![\\w])${escapeRegex(o.name)}(?![\\w])`, 'gi');
-        let m;
-        while ((m = re.exec(text))) {
-            const end = m.index + m[0].length;
-            if (!best || end > best.end || (end === best.end && o.name.length > best.name.length)) {
-                best = { name: o.name, end };
+        for (const key of o.keys) {
+            const re = new RegExp(`(?<![\\w])${escapeRegex(key)}(?![\\w])`, 'gi');
+            let m;
+            while ((m = re.exec(text))) {
+                const end = m.index + m[0].length;
+                if (!best || end > best.end || (end === best.end && key.length > best.len)) {
+                    best = { name: o.name, end, len: key.length };
+                }
             }
         }
     }
     return best?.name ?? null;
+}
+
+function step(delta) {
+    if (!outfits.length) return;
+    const index = outfits.findIndex(o => o.name === current);
+    const next = index === -1
+        ? (delta > 0 ? 0 : outfits.length - 1)
+        : (index + delta + outfits.length) % outfits.length;
+    show(outfits[next].name);
 }
 
 function scanText(text) {
@@ -222,7 +237,7 @@ function scanMessage(id) {
 function renderSelect() {
     const select = $('#outfit_viewer_select').empty();
     select.append($('<option>').val('').text(outfits.length ? '— none —' : '— no folder —'));
-    for (const o of outfits) select.append($('<option>').val(o.name).text(o.name));
+    for (const o of outfits) select.append($('<option>').val(o.name).text(o.label));
     select.val(current ?? '');
 }
 
@@ -243,16 +258,97 @@ function renderStatus() {
 
 function applyLayout() {
     const s = settings();
-    $('#outfit_viewer_panel')
+    const panel = $('#outfit_viewer_panel')
         .css('width', `${s.width}px`)
         .toggle(s.enabled && s.visible);
     $('#outfit_viewer_toggle').toggle(s.enabled && !s.visible);
+    if (s.position) {
+        panel.css({ left: `${s.position.left}px`, top: `${s.position.top}px`, right: 'auto' });
+        clampToViewport();
+    } else {
+        panel.css({ left: '', top: '', right: '' });
+    }
+}
+
+function clampToViewport() {
+    const panel = document.getElementById('outfit_viewer_panel');
+    const s = settings();
+    if (!panel || !s.position) return;
+    const maxLeft = Math.max(0, window.innerWidth - panel.offsetWidth);
+    const maxTop = Math.max(0, window.innerHeight - 40);
+    s.position.left = Math.min(Math.max(0, s.position.left), maxLeft);
+    s.position.top = Math.min(Math.max(0, s.position.top), maxTop);
+    panel.style.left = `${s.position.left}px`;
+    panel.style.top = `${s.position.top}px`;
+}
+
+// Drag by the header (anywhere but the dropdown and the close button).
+function enableDragging() {
+    const panel = document.getElementById('outfit_viewer_panel');
+    const header = panel.querySelector('.outfit_viewer_header');
+    header.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0 || e.target.closest('select, #outfit_viewer_hide')) return;
+        e.preventDefault();
+        const rect = panel.getBoundingClientRect();
+        const offsetX = e.clientX - rect.left;
+        const offsetY = e.clientY - rect.top;
+        header.setPointerCapture(e.pointerId);
+        panel.classList.add('dragging');
+        const move = (ev) => {
+            settings().position = { left: ev.clientX - offsetX, top: ev.clientY - offsetY };
+            panel.style.right = 'auto';
+            clampToViewport();
+        };
+        const up = () => {
+            header.removeEventListener('pointermove', move);
+            header.removeEventListener('pointerup', up);
+            panel.classList.remove('dragging');
+            ctx().saveSettingsDebounced();
+        };
+        header.addEventListener('pointermove', move);
+        header.addEventListener('pointerup', up);
+    });
+    // Double-click the header to snap back to the default spot.
+    header.addEventListener('dblclick', (e) => {
+        if (e.target.closest('select, #outfit_viewer_hide')) return;
+        delete settings().position;
+        ctx().saveSettingsDebounced();
+        applyLayout();
+    });
+    window.addEventListener('resize', clampToViewport);
+}
+
+// Scroll or arrow keys while the pointer is over the panel flip through outfits.
+function enableBrowsing() {
+    const panel = document.getElementById('outfit_viewer_panel');
+    let hovering = false;
+    let lastWheel = 0;
+    panel.addEventListener('pointerenter', () => { hovering = true; });
+    panel.addEventListener('pointerleave', () => { hovering = false; });
+    panel.addEventListener('wheel', (e) => {
+        if (e.target.closest('select')) return;
+        e.preventDefault();
+        const now = Date.now();
+        if (now - lastWheel < 150) return;
+        lastWheel = now;
+        step(e.deltaY > 0 ? 1 : -1);
+    }, { passive: false });
+    document.addEventListener('keydown', (e) => {
+        if (!hovering || !$(panel).is(':visible')) return;
+        if (e.target.closest('input, textarea, [contenteditable="true"]')) return;
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        // Capture phase, so SillyTavern's own arrow-key swiping doesn't also fire.
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        step(e.key === 'ArrowRight' ? 1 : -1);
+    }, true);
 }
 
 function buildPanel() {
     const panel = $(`
         <div id="outfit_viewer_panel">
             <div class="outfit_viewer_header">
+                <div class="outfit_viewer_grip fa-solid fa-grip-vertical" title="Drag to move · double-click to reset"></div>
                 <select id="outfit_viewer_select" title="Pick an outfit"></select>
                 <div id="outfit_viewer_hide" class="fa-solid fa-xmark" title="Hide"></div>
             </div>
@@ -266,7 +362,9 @@ function buildPanel() {
     $('#outfit_viewer_hide').on('click', () => { settings().visible = false; ctx().saveSettingsDebounced(); applyLayout(); });
     $('#outfit_viewer_toggle').on('click', () => { settings().visible = true; ctx().saveSettingsDebounced(); applyLayout(); });
     $('#outfit_viewer_empty').show();
-    $('#outfit_viewer_img').hide();
+    $('#outfit_viewer_img').hide().attr('draggable', 'false');
+    enableDragging();
+    enableBrowsing();
 }
 
 function buildSettings() {

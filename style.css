@@ -19,12 +19,25 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    cursor: grab;
+    touch-action: none;
+}
+
+#outfit_viewer_panel.dragging,
+#outfit_viewer_panel.dragging .outfit_viewer_header {
+    cursor: grabbing;
+    user-select: none;
 }
 
 #outfit_viewer_select {
     flex: 1;
     min-width: 0;
     margin: 0;
+}
+
+.outfit_viewer_grip {
+    padding: 4px 6px;
+    opacity: 0.6;
 }
 
 #outfit_viewer_hide {
