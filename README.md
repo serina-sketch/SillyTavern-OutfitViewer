@@ -2,6 +2,8 @@
 
 A SillyTavern extension that shows an outfit image in a panel to the right of the chat. It switches automatically when an outfit's name is mentioned, and you can pick one by hand at any time. It isn't tied to any character card.
 
+![Outfit Viewer panel beside the chat](example.png)
+
 ## Setup
 
 **Recommended: a SillyTavern image folder.** It's remembered across reloads in every browser.

@@ -320,10 +320,18 @@ function step(delta) {
     show(outfits[next].name);
 }
 
+// Status blocks (ID cards, duties, quests) can name outfits that aren't being worn right now.
+// Also drops an unclosed block, which is what a message looks like mid-stream.
+function stripStatusBlocks(text) {
+    return text
+        .replace(/<!--\s*GFX_START\s*-->[\s\S]*?<!--\s*GFX_END\s*-->/g, '')
+        .replace(/<!--\s*GFX_START\s*-->[\s\S]*$/, '');
+}
+
 function scanText(text) {
     const s = settings();
     if (!s.enabled || !s.autoSwitch || !text || !outfits.length) return;
-    const found = findOutfit(text);
+    const found = findOutfit(stripStatusBlocks(text));
     if (found && found !== current) show(found);
 }
 
@@ -429,7 +437,8 @@ function enableBrowsing() {
     panel.addEventListener('pointerenter', () => { hovering = true; });
     panel.addEventListener('pointerleave', () => { hovering = false; });
     panel.addEventListener('wheel', (e) => {
-        if (e.target.closest('select')) return;
+        // Let the dropdown and the description box scroll normally.
+        if (e.target.closest('select, #outfit_viewer_desc')) return;
         e.preventDefault();
         const now = Date.now();
         if (now - lastWheel < 150) return;
