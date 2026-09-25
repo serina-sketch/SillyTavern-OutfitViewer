@@ -4,6 +4,8 @@ A SillyTavern extension that shows an outfit image in a panel to the right of th
 
 ![Outfit Viewer panel beside the chat](example.png)
 
+![Outfit Viewer full screen view](example2.png)
+
 ## Setup
 
 **Recommended: a SillyTavern image folder.** It's remembered across reloads in every browser.
