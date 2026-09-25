@@ -280,6 +280,19 @@ function cycleImage(delta) {
     renderImage(outfit);
 }
 
+// Click the image for a full-screen view; click anywhere or press Esc to close.
+function openLightbox() {
+    const src = $('#outfit_viewer_img').attr('src');
+    if (!src) return;
+    const box = $('<div id="outfit_viewer_lightbox"></div>').append($('<img>').attr('src', src));
+    const close = () => { box.remove(); $(document).off('keydown.outfitLightbox'); };
+    box.on('click', close);
+    $(document).on('keydown.outfitLightbox', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); close(); }
+    });
+    $('body').append(box);
+}
+
 function renderImage(outfit) {
     $('#outfit_viewer_img').attr('src', outfit ? outfit.images[outfit.index].url : '').toggle(!!outfit);
     const many = !!outfit && outfit.images.length > 1;
@@ -514,6 +527,7 @@ function buildPanel() {
     $('#outfit_viewer_select').on('change', function () { show(this.value || null); });
     $('#outfit_viewer_refresh').on('click', refresh);
     $('#outfit_viewer_cycle').on('click', () => cycleImage(1)).hide();
+    $('#outfit_viewer_img').on('click', openLightbox);
     $('#outfit_viewer_count').hide();
     $('#outfit_viewer_hide').on('click', () => { settings().visible = false; ctx().saveSettingsDebounced(); applyLayout(); });
     $('#outfit_viewer_toggle').on('click', () => { settings().visible = true; ctx().saveSettingsDebounced(); applyLayout(); });
