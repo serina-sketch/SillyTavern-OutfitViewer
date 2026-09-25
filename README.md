@@ -20,7 +20,7 @@ A SillyTavern extension that shows an outfit image in a panel to the right of th
 
 Name extra images after the same keys, then a space and anything in parentheses: `Nurse (2).png`, `Nurse (bent over).png`. They're variations of `Nurse.png`, one outfit with several images. Keys themselves never contain `(` or `)`.
 
-Switching to an outfit shows one of its images at random. The ⇅ button, or ↑/↓ while hovering the panel, steps to the next or previous image; the corner shows which one (e.g. 2/3). The dropdown shows how many images an outfit has.
+Switching to an outfit shows one of its images at random. The ⇅ button, or ↑/↓ while hovering the panel, steps to the next or previous image; the corner shows which one (e.g. 2/3). On an outfit with only one image, the same button lies flat (⇄) and goes to the next outfit instead. The dropdown shows how many images an outfit has.
 
 ### Subfolders (optional server plugin)
 

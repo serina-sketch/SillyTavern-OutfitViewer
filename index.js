@@ -358,7 +358,11 @@ function renderImage(outfit) {
         .attr("src", outfit ? outfit.images[outfit.index].url : "")
         .toggle(!!outfit);
     const many = !!outfit && outfit.images.length > 1;
-    $("#outfit_viewer_cycle").toggle(many);
+    // ⇅ steps through this outfit's images; ⇄ (single image) moves on to the next outfit.
+    $("#outfit_viewer_cycle")
+        .toggle(outfits.length > 1 || many)
+        .toggleClass("fa-rotate-90", many)
+        .attr("title", many ? "Next image of this outfit (↑/↓)" : "Next outfit (←/→)");
     $("#outfit_viewer_count")
         .toggle(many)
         .text(many ? `${outfit.index + 1}/${outfit.images.length}` : "");
@@ -623,7 +627,7 @@ function buildPanel() {
                 <div class="outfit_viewer_grip fa-solid fa-grip-vertical" title="Drag to move · double-click to reset"></div>
                 <select id="outfit_viewer_select" title="Pick an outfit"></select>
                 <small id="outfit_viewer_count"></small>
-                <div id="outfit_viewer_cycle" class="outfit_viewer_icon fa-solid fa-up-down" title="Next image of this outfit (↑/↓)"></div>
+                <div id="outfit_viewer_cycle" class="outfit_viewer_icon fa-solid fa-arrow-right-arrow-left" title="Next outfit (←/→)"></div>
                 <div id="outfit_viewer_refresh" class="outfit_viewer_icon fa-solid fa-rotate" title="Reload folder"></div>
                 <div id="outfit_viewer_hide" class="outfit_viewer_icon fa-solid fa-xmark" title="Hide"></div>
             </div>
@@ -639,7 +643,11 @@ function buildPanel() {
     });
     $("#outfit_viewer_refresh").on("click", refresh);
     $("#outfit_viewer_cycle")
-        .on("click", () => cycleImage(1))
+        .on("click", () => {
+            const outfit = outfits.find((o) => o.name === current);
+            if (outfit && outfit.images.length > 1) cycleImage(1);
+            else step(1);
+        })
         .hide();
     $("#outfit_viewer_img").on("click", openLightbox);
     $("#outfit_viewer_count").hide();
