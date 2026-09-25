@@ -8,6 +8,8 @@ const defaults = {
     autoSwitch: true,
     scanUserMessages: true,
     showDescription: true,
+    // Locked: messages no longer switch the outfit; manual switching still works.
+    locked: false,
     // Folder name under SillyTavern's data/<user>/user/images/. Survives reloads, unlike the browser picker.
     serverFolder: "outfits",
     width: 320,
@@ -353,6 +355,17 @@ function openLightbox() {
     $("body").append(box);
 }
 
+function renderLock() {
+    const locked = settings().locked;
+    $("#outfit_viewer_lock")
+        .toggleClass("fa-lock", locked)
+        .toggleClass("fa-lock-open", !locked)
+        .toggleClass("outfit_viewer_locked", locked)
+        .attr("title", locked
+            ? "Locked: messages won't switch the outfit. Click to unlock."
+            : "Lock this outfit: stop messages from switching it");
+}
+
 function renderImage(outfit) {
     $("#outfit_viewer_img")
         .attr("src", outfit ? outfit.images[outfit.index].url : "")
@@ -455,7 +468,7 @@ function stripStatusBlocks(text) {
 
 function scanText(text) {
     const s = settings();
-    if (!s.enabled || !s.autoSwitch || !text || !outfits.length) return;
+    if (!s.enabled || !s.autoSwitch || s.locked || !text || !outfits.length) return;
     const found = findOutfit(stripStatusBlocks(text));
     if (found && found !== current) show(found);
 }
@@ -627,6 +640,7 @@ function buildPanel() {
                 <div class="outfit_viewer_grip fa-solid fa-grip-vertical" title="Drag to move · double-click to reset"></div>
                 <select id="outfit_viewer_select" title="Pick an outfit"></select>
                 <small id="outfit_viewer_count"></small>
+                <div id="outfit_viewer_lock" class="outfit_viewer_icon fa-solid fa-lock-open" title="Lock this outfit: stop messages from switching it"></div>
                 <div id="outfit_viewer_cycle" class="outfit_viewer_icon fa-solid fa-arrow-right-arrow-left" title="Next outfit (←/→)"></div>
                 <div id="outfit_viewer_refresh" class="outfit_viewer_icon fa-solid fa-rotate" title="Reload folder"></div>
                 <div id="outfit_viewer_hide" class="outfit_viewer_icon fa-solid fa-xmark" title="Hide"></div>
@@ -642,6 +656,12 @@ function buildPanel() {
         show(this.value || null);
     });
     $("#outfit_viewer_refresh").on("click", refresh);
+    $("#outfit_viewer_lock").on("click", () => {
+        settings().locked = !settings().locked;
+        ctx().saveSettingsDebounced();
+        renderLock();
+    });
+    renderLock();
     $("#outfit_viewer_cycle")
         .on("click", () => {
             const outfit = outfits.find((o) => o.name === current);

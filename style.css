@@ -41,6 +41,7 @@
 }
 
 #outfit_viewer_hide,
+#outfit_viewer_lock,
 #outfit_viewer_cycle,
 #outfit_viewer_refresh {
     cursor: pointer;
@@ -49,6 +50,7 @@
 }
 
 #outfit_viewer_hide:hover,
+#outfit_viewer_lock:hover,
 #outfit_viewer_cycle:hover,
 #outfit_viewer_refresh:hover {
     opacity: 1;
@@ -119,4 +121,9 @@
     object-fit: contain;
     border-radius: 8px;
     box-shadow: 0 8px 30px #000a;
+}
+
+#outfit_viewer_lock.outfit_viewer_locked {
+    opacity: 1;
+    color: var(--SmartThemeQuoteColor, #e8a);
 }
