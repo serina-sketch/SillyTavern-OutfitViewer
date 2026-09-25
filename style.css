@@ -41,6 +41,7 @@
 }
 
 #outfit_viewer_hide,
+#outfit_viewer_cycle,
 #outfit_viewer_refresh {
     cursor: pointer;
     padding: 4px 6px;
@@ -48,6 +49,7 @@
 }
 
 #outfit_viewer_hide:hover,
+#outfit_viewer_cycle:hover,
 #outfit_viewer_refresh:hover {
     opacity: 1;
 }

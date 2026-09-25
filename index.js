@@ -113,15 +113,16 @@ async function nameFromPngMetadata(file) {
 
 // Description of an outfit, read from its image the first time it's shown, then cached.
 async function descriptionOf(outfit) {
-    if (outfit.description !== undefined) return outfit.description;
+    const image = outfit.images[outfit.index];
+    if (image.description !== undefined) return image.description;
     try {
-        const response = await fetch(outfit.url);
-        outfit.description = descriptionFromPrompt(promptFromPng(await response.arrayBuffer()));
+        const response = await fetch(image.url);
+        image.description = descriptionFromPrompt(promptFromPng(await response.arrayBuffer()));
     } catch (err) {
         console.warn('[Outfit Viewer] could not read description', err);
-        outfit.description = '';
+        image.description = '';
     }
-    return outfit.description;
+    return image.description;
 }
 
 async function outfitName(file) {
@@ -137,19 +138,21 @@ async function outfitName(file) {
 // ---------- loading a folder ----------
 
 function setOutfits(entries, label) {
-    outfits.forEach(o => o.url.startsWith('blob:') && URL.revokeObjectURL(o.url));
-    const loaded = [];
-    const seen = new Map();
-    for (let { name, url } of entries) {
-        const count = (seen.get(name) ?? 0) + 1;
-        seen.set(name, count);
-        if (count > 1) name = `${name} ${count}`;
-        // "Fluffy witch, Paw witch.png" -> shown as "Fluffy witch", triggered by either key.
-        const keys = name.split(',').map(k => k.trim()).filter(Boolean);
-        loaded.push({ name, label: keys[0] ?? name, keys, url });
+    outfits.forEach(o => o.images.forEach(i => i.url.startsWith('blob:') && URL.revokeObjectURL(i.url)));
+    const byName = new Map();
+    for (const entry of entries) {
+        const name = entry.name.replace(/\s*\([^()]*\)\s*$/, '').trim() || entry.name;
+        const urls = entry.urls;
+        let outfit = byName.get(name.toLowerCase());
+        if (!outfit) {
+            // "Fluffy witch, Paw witch" -> shown as "Fluffy witch", triggered by either key.
+            const keys = name.split(',').map(k => k.trim()).filter(Boolean);
+            outfit = { name, label: keys[0] ?? name, keys, images: [], index: 0 };
+            byName.set(name.toLowerCase(), outfit);
+        }
+        outfit.images.push(...urls.map(url => ({ url })));
     }
-    loaded.sort((a, b) => a.name.localeCompare(b.name));
-    outfits = loaded;
+    outfits = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
     folderName = label;
     renderSelect();
     renderStatus();
@@ -160,28 +163,34 @@ async function loadFiles(files, label) {
     const entries = [];
     for (const file of files) {
         if (!IMAGE_EXT.test(file.name)) continue;
-        entries.push({ name: await outfitName(file), url: URL.createObjectURL(file) });
+        entries.push({ name: await outfitName(file), urls: [URL.createObjectURL(file)] });
     }
     setOutfits(entries, label);
 }
 
 async function loadFromServer(folder) {
+    // Cache-bust so an image replaced under the same name shows its new version.
+    const stamp = Date.now();
+    const urlOf = (file) => `user/images/${encodeURIComponent(folder)}/${file.split('/').map(encodeURIComponent).join('/')}?v=${stamp}`;
     try {
-        const response = await fetch('/api/images/list', {
-            method: 'POST',
+        let entries;
+        const plugin = await fetch(`/api/plugins/outfit-viewer/list?folder=${encodeURIComponent(folder)}`, {
             headers: ctx().getRequestHeaders(),
-            body: JSON.stringify({ folder, sortField: 'name', sortOrder: 'asc', type: 1 }),
         });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const files = await response.json();
-        // Cache-bust so an image replaced under the same name shows its new version.
-        const stamp = Date.now();
-        const entries = files
-            .filter(f => IMAGE_EXT.test(f))
-            .map(f => ({
-                name: f.replace(IMAGE_EXT, ''),
-                url: `user/images/${encodeURIComponent(folder)}/${encodeURIComponent(f)}?v=${stamp}`,
-            }));
+        if (plugin.ok) {
+            entries = (await plugin.json()).map(o => ({ name: o.name, urls: o.files.map(urlOf) }));
+        } else {
+            // No server plugin: flat folder only, one image per outfit.
+            const response = await fetch('/api/images/list', {
+                method: 'POST',
+                headers: ctx().getRequestHeaders(),
+                body: JSON.stringify({ folder, sortField: 'name', sortOrder: 'asc', type: 1 }),
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            entries = (await response.json())
+                .filter(f => IMAGE_EXT.test(f))
+                .map(f => ({ name: f.replace(IMAGE_EXT, ''), urls: [urlOf(f)] }));
+        }
         pendingHandle = null;
         setOutfits(entries, `user/images/${folder}`);
     } catch (err) {
@@ -256,15 +265,39 @@ async function restoreFolder() {
 
 // ---------- showing an outfit ----------
 
+function randomIndex(outfit) {
+    const n = outfit.images.length;
+    if (n < 2) return 0;
+    const pick = Math.floor(Math.random() * (n - 1));
+    return pick >= outfit.index ? pick + 1 : pick;
+}
+
+// Step through the current outfit's images in order.
+function cycleImage(delta) {
+    const outfit = outfits.find(o => o.name === current);
+    if (!outfit || outfit.images.length < 2) return;
+    outfit.index = (outfit.index + delta + outfit.images.length) % outfit.images.length;
+    renderImage(outfit);
+}
+
+function renderImage(outfit) {
+    $('#outfit_viewer_img').attr('src', outfit ? outfit.images[outfit.index].url : '').toggle(!!outfit);
+    const many = !!outfit && outfit.images.length > 1;
+    $('#outfit_viewer_cycle').toggle(many);
+    $('#outfit_viewer_count').toggle(many).text(many ? `${outfit.index + 1}/${outfit.images.length}` : '');
+    renderDescription(outfit);
+}
+
 function show(name, { persist = true } = {}) {
     const wanted = String(name).toLowerCase();
     const outfit = outfits.find(o => o.name.toLowerCase() === wanted)
         ?? outfits.find(o => o.keys.some(k => k.toLowerCase() === wanted));
+    // Arriving at an outfit starts on a random image; staying on it keeps the current one.
+    if (outfit && outfit.name !== current) outfit.index = randomIndex(outfit);
     current = outfit ? outfit.name : null;
-    $('#outfit_viewer_img').attr('src', outfit ? outfit.url : '').toggle(!!outfit);
     $('#outfit_viewer_empty').toggle(!outfit);
     $('#outfit_viewer_select').val(current ?? '');
-    renderDescription(outfit);
+    renderImage(outfit);
     if (persist) {
         const { chatMetadata, saveMetadataDebounced } = ctx();
         if (chatMetadata) {
@@ -348,7 +381,10 @@ function renderSelect() {
     const select = $('#outfit_viewer_select').empty();
     select.append($('<option>').val('').text(outfits.length ? '— none —' : '— no folder —'));
     // Show every key, so it's clear which words bring each outfit up.
-    for (const o of outfits) select.append($('<option>').val(o.name).text(o.keys.join(', ')));
+    for (const o of outfits) {
+        const count = o.images.length > 1 ? ` (${o.images.length})` : '';
+        select.append($('<option>').val(o.name).text(o.keys.join(', ') + count));
+    }
     select.val(current ?? '');
 }
 
@@ -448,11 +484,12 @@ function enableBrowsing() {
     document.addEventListener('keydown', (e) => {
         if (!hovering || !$(panel).is(':visible')) return;
         if (e.target.closest('input, textarea, [contenteditable="true"]')) return;
-        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
         // Capture phase, so SillyTavern's own arrow-key swiping doesn't also fire.
         e.preventDefault();
         e.stopImmediatePropagation();
-        step(e.key === 'ArrowRight' ? 1 : -1);
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') cycleImage(e.key === 'ArrowDown' ? 1 : -1);
+        else step(e.key === 'ArrowRight' ? 1 : -1);
     }, true);
 }
 
@@ -462,6 +499,8 @@ function buildPanel() {
             <div class="outfit_viewer_header">
                 <div class="outfit_viewer_grip fa-solid fa-grip-vertical" title="Drag to move · double-click to reset"></div>
                 <select id="outfit_viewer_select" title="Pick an outfit"></select>
+                <small id="outfit_viewer_count"></small>
+                <div id="outfit_viewer_cycle" class="outfit_viewer_icon fa-solid fa-up-down" title="Next image of this outfit (↑/↓)"></div>
                 <div id="outfit_viewer_refresh" class="outfit_viewer_icon fa-solid fa-rotate" title="Reload folder"></div>
                 <div id="outfit_viewer_hide" class="outfit_viewer_icon fa-solid fa-xmark" title="Hide"></div>
             </div>
@@ -474,6 +513,8 @@ function buildPanel() {
     $('body').append(panel);
     $('#outfit_viewer_select').on('change', function () { show(this.value || null); });
     $('#outfit_viewer_refresh').on('click', refresh);
+    $('#outfit_viewer_cycle').on('click', () => cycleImage(1)).hide();
+    $('#outfit_viewer_count').hide();
     $('#outfit_viewer_hide').on('click', () => { settings().visible = false; ctx().saveSettingsDebounced(); applyLayout(); });
     $('#outfit_viewer_toggle').on('click', () => { settings().visible = true; ctx().saveSettingsDebounced(); applyLayout(); });
     $('#outfit_viewer_empty').show();

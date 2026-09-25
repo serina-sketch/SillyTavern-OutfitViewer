@@ -14,6 +14,32 @@ A SillyTavern extension that shows an outfit image in a panel to the right of th
 
 **Alternative: a folder picked from your computer.** Click **Choose outfit folder**. Only Chrome and Edge can remember it; Brave (which turns that browser feature off) and Firefox ask again after every reload.
 
+## Several images per outfit
+
+Name extra images after the same keys, then a space and anything in parentheses: `Nurse (2).png`, `Nurse (bent over).png`. They're variations of `Nurse.png`, one outfit with several images. Keys themselves never contain `(` or `)`.
+
+Switching to an outfit shows one of its images at random. The ⇅ button, or ↑/↓ while hovering the panel, steps to the next or previous image; the corner shows which one (e.g. 2/3). The dropdown shows how many images an outfit has.
+
+### Subfolders (optional server plugin)
+
+Put an outfit's images in a subfolder: the folder name is the key, and the image names inside don't matter.
+
+```
+outfits/
+  Maid.png                 ← one image
+  Nurse/                   ← "Nurse", several images
+    a.png
+    b.png
+```
+
+SillyTavern can't list subfolders by itself, so this needs the included server plugin:
+
+1. Copy the `server` folder to `SillyTavern/plugins/outfit-viewer`.
+2. In `SillyTavern/config.yaml`, set `enableServerPlugins: true`.
+3. Restart SillyTavern.
+
+Without the plugin, only loose images in the folder are used.
+
 ## Outfit names
 
 - An image's outfit name is its filename without the extension: `Witch.png` → "Witch".
