@@ -412,39 +412,84 @@ async function copyText(text, label) {
 }
 
 // Click the image for a full-screen view; click outside it or press Esc to close.
+// Arrows and the scroll wheel keep browsing, same as over the panel.
 function openLightbox() {
-    const src = $("#outfit_viewer_img").attr("src");
-    if (!src) return;
+    const panelImg = document.getElementById("outfit_viewer_img");
+    if (!panelImg.getAttribute("src")) return;
+    const img = $("<img>");
     const bar = $('<div class="outfit_viewer_lightbox_bar"></div>');
-    const box = $('<div id="outfit_viewer_lightbox"></div>').append(
-        $("<img>").attr("src", src),
-        bar,
-    );
-    const close = () => {
-        box.remove();
-        $(document).off("keydown.outfitLightbox");
+    const box = $('<div id="outfit_viewer_lightbox"></div>').append(img, bar);
+
+    // The buttons stay put; they're greyed out until the image's prompts are read.
+    const button = (label) =>
+        $('<button class="menu_button"></button>')
+            .text(label)
+            .prop("disabled", true)
+            .on("click", function () {
+                copyText($(this).data("text"), label);
+            });
+    const promptButton = button("Prompt");
+    const negativeButton = button("Negative prompt");
+    bar.append(promptButton, negativeButton);
+    const setButton = (btn, text, pending) =>
+        btn
+            .data("text", text)
+            .prop("disabled", !text)
+            .attr("title", text || (pending ? "Reading prompt..." : "Not found in this image"));
+
+    // Show whatever the panel shows, and reload its prompts.
+    const refresh = () => {
+        const src = panelImg.getAttribute("src");
+        if (!src) return close();
+        img.attr("src", src);
+        setButton(promptButton, "", true);
+        setButton(negativeButton, "", true);
+        readPrompts(src).then(({ prompt, negative }) => {
+            if (img.attr("src") !== src) return; // moved on meanwhile
+            setButton(promptButton, prompt);
+            setButton(negativeButton, negative);
+        });
     };
-    box.on("click", (e) => {
-        if (!$(e.target).closest(".outfit_viewer_lightbox_bar").length) close();
-    });
-    $(document).on("keydown.outfitLightbox", (e) => {
+    const observer = new MutationObserver(refresh);
+
+    const onKey = (e) => {
         if (e.key === "Escape") {
             e.preventDefault();
             e.stopImmediatePropagation();
             close();
+            return;
         }
-    });
-    $("body").append(box);
+        if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (e.key === "ArrowUp" || e.key === "ArrowDown")
+            cycleImage(e.key === "ArrowDown" ? 1 : -1);
+        else step(e.key === "ArrowRight" ? 1 : -1);
+    };
+    let lastWheel = 0;
+    const onWheel = (e) => {
+        e.preventDefault();
+        const now = Date.now();
+        if (now - lastWheel < 150) return;
+        lastWheel = now;
+        step(e.deltaY > 0 ? 1 : -1);
+    };
 
-    readPrompts(src).then(({ prompt, negative }) => {
-        const button = (label, text) =>
-            $('<button class="menu_button"></button>')
-                .text(label)
-                .prop("disabled", !text)
-                .attr("title", text || "Not found in this image")
-                .on("click", () => copyText(text, label));
-        bar.append(button("Prompt", prompt), button("Negative prompt", negative));
+    function close() {
+        observer.disconnect();
+        document.removeEventListener("keydown", onKey, true);
+        box.remove();
+    }
+
+    box.on("click", (e) => {
+        if (!$(e.target).closest(".outfit_viewer_lightbox_bar").length) close();
     });
+    box[0].addEventListener("wheel", onWheel, { passive: false });
+    // Capture phase, so SillyTavern's own arrow-key swiping doesn't also fire.
+    document.addEventListener("keydown", onKey, true);
+    observer.observe(panelImg, { attributes: true, attributeFilter: ["src"] });
+    $("body").append(box);
+    refresh();
 }
 
 function renderLock() {
