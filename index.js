@@ -333,18 +333,100 @@ function cycleImage(delta) {
     renderImage(outfit);
 }
 
-// Click the image for a full-screen view; click anywhere or press Esc to close.
+// Read the text chunks of a PNG (tEXt, zTXt, iTXt), like chatbot-tools/image_prompt.py.
+async function pngTextChunks(src) {
+    const buf = new Uint8Array(await (await fetch(src)).arrayBuffer());
+    const view = new DataView(buf.buffer);
+    const latin = new TextDecoder("latin1");
+    const utf8 = new TextDecoder("utf-8");
+    const inflate = async (bytes) =>
+        new Uint8Array(
+            await new Response(
+                new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate")),
+            ).arrayBuffer(),
+        );
+    const chunks = {};
+    let pos = 8;
+    while (pos + 8 <= buf.length) {
+        const length = view.getUint32(pos);
+        const type = latin.decode(buf.subarray(pos + 4, pos + 8));
+        const body = buf.subarray(pos + 8, pos + 8 + length);
+        pos += 12 + length;
+        if (type === "IEND") break;
+        if (!["tEXt", "zTXt", "iTXt"].includes(type)) continue;
+        const nul = body.indexOf(0);
+        const key = latin.decode(body.subarray(0, nul));
+        let rest = body.subarray(nul + 1);
+        try {
+            if (type === "tEXt") {
+                // SwarmUI and A1111 write UTF-8 here even though the spec says latin-1.
+                chunks[key] = utf8.decode(rest);
+            } else if (type === "zTXt") {
+                chunks[key] = utf8.decode(await inflate(rest.subarray(1)));
+            } else {
+                const compressed = rest[0];
+                rest = rest.subarray(2);
+                rest = rest.subarray(rest.indexOf(0) + 1); // language
+                rest = rest.subarray(rest.indexOf(0) + 1); // translated keyword
+                chunks[key] = utf8.decode(compressed ? await inflate(rest) : rest);
+            }
+        } catch {
+            // Skip a chunk we can't decode.
+        }
+    }
+    return chunks;
+}
+
+// Pull the prompt and negative prompt out of SwarmUI JSON or A1111 plain text.
+async function readPrompts(src) {
+    try {
+        const chunks = await pngTextChunks(src);
+        const raw = chunks.parameters || chunks.prompt || "";
+        try {
+            const parsed = JSON.parse(raw);
+            const params = parsed.sui_image_params || parsed;
+            return {
+                prompt: typeof params.prompt === "string" ? params.prompt : "",
+                negative:
+                    params.negativeprompt || params.negative_prompt || params.negativePrompt || "",
+            };
+        } catch {
+            const [prompt, after = ""] = raw.split("\nNegative prompt:");
+            return {
+                prompt: prompt.trim(),
+                negative: after.split(/\n(?=Steps: )/)[0].trim(),
+            };
+        }
+    } catch {
+        return { prompt: "", negative: "" };
+    }
+}
+
+async function copyText(text, label) {
+    try {
+        await navigator.clipboard.writeText(text);
+        toastr.success(`${label} copied`);
+    } catch {
+        toastr.error(`Couldn't copy the ${label.toLowerCase()}`);
+    }
+}
+
+// Click the image for a full-screen view; click outside it or press Esc to close.
 function openLightbox() {
     const src = $("#outfit_viewer_img").attr("src");
     if (!src) return;
+    const bar = $('<div class="outfit_viewer_lightbox_bar"></div>');
     const box = $('<div id="outfit_viewer_lightbox"></div>').append(
         $("<img>").attr("src", src),
+        bar,
     );
     const close = () => {
         box.remove();
         $(document).off("keydown.outfitLightbox");
     };
-    box.on("click", close);
+    box.on("click", (e) => {
+        if (!$(e.target).closest(".outfit_viewer_lightbox_bar").length) close();
+    });
     $(document).on("keydown.outfitLightbox", (e) => {
         if (e.key === "Escape") {
             e.preventDefault();
@@ -353,6 +435,16 @@ function openLightbox() {
         }
     });
     $("body").append(box);
+
+    readPrompts(src).then(({ prompt, negative }) => {
+        const button = (label, text) =>
+            $('<button class="menu_button"></button>')
+                .text(label)
+                .prop("disabled", !text)
+                .attr("title", text || "Not found in this image")
+                .on("click", () => copyText(text, label));
+        bar.append(button("Prompt", prompt), button("Negative prompt", negative));
+    });
 }
 
 function renderLock() {

@@ -109,7 +109,9 @@
     z-index: 10000;
     display: flex;
     align-items: center;
+    flex-direction: column;
     justify-content: center;
+    gap: 10px;
     padding: 2vh 2vw;
     background: #000c;
     cursor: zoom-out;
@@ -117,7 +119,8 @@
 
 #outfit_viewer_lightbox img {
     max-width: 100%;
-    max-height: 100%;
+    min-height: 0;
+    flex: 0 1 auto;
     object-fit: contain;
     border-radius: 8px;
     box-shadow: 0 8px 30px #000a;
@@ -126,4 +129,21 @@
 #outfit_viewer_lock.outfit_viewer_locked {
     opacity: 1;
     color: var(--SmartThemeQuoteColor, #e8a);
+}
+
+.outfit_viewer_lightbox_bar {
+    display: flex;
+    gap: 6px;
+    cursor: default;
+}
+
+.outfit_viewer_lightbox_bar .menu_button {
+    width: auto;
+    padding: 4px 12px;
+    white-space: nowrap;
+}
+
+.outfit_viewer_lightbox_bar .menu_button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
 }
