@@ -4,12 +4,10 @@ const DB_STORE = "handles";
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif|avif)$/i;
 
 const defaults = {
-    enabled: true,
     autoSwitch: true,
-    scanUserMessages: true,
+    // Only my own messages switch the outfit; the bot's are ignored.
+    onlyUserMessages: false,
     showDescription: true,
-    // Locked: messages no longer switch the outfit; manual switching still works.
-    locked: false,
     // Folder name under SillyTavern's data/<user>/user/images/. Survives reloads, unlike the browser picker.
     serverFolder: "outfits",
     width: 320,
@@ -31,6 +29,12 @@ function settings() {
     for (const [key, value] of Object.entries(defaults)) {
         if (store[MODULE][key] === undefined) store[MODULE][key] = value;
     }
+    // Older versions had a separate lock, an Enabled box and a user-message box.
+    const s = store[MODULE];
+    if (s.locked) s.autoSwitch = false;
+    delete s.locked;
+    delete s.enabled;
+    delete s.scanUserMessages;
     return store[MODULE];
 }
 
@@ -493,7 +497,9 @@ function openLightbox() {
 }
 
 function renderLock() {
-    const locked = settings().locked;
+    // The lock is the "Switch automatically" setting, shown on the panel.
+    const locked = !settings().autoSwitch;
+    $("#outfit_viewer_auto").prop("checked", !locked);
     $("#outfit_viewer_lock")
         .toggleClass("fa-lock", locked)
         .toggleClass("fa-lock-open", !locked)
@@ -605,7 +611,7 @@ function stripStatusBlocks(text) {
 
 function scanText(text) {
     const s = settings();
-    if (!s.enabled || !s.autoSwitch || s.locked || !text || !outfits.length) return;
+    if (!s.autoSwitch || !text || !outfits.length) return;
     const found = findOutfit(stripStatusBlocks(text));
     if (found && found !== current) show(found);
 }
@@ -613,7 +619,8 @@ function scanText(text) {
 function scanMessage(id) {
     const msg = ctx().chat?.[id];
     if (!msg) return;
-    if (msg.is_user && !settings().scanUserMessages) return;
+    const s = settings();
+    if (!msg.is_user && s.onlyUserMessages) return;
     scanText(msg.mes);
 }
 
@@ -657,8 +664,8 @@ function applyLayout() {
     const s = settings();
     const panel = $("#outfit_viewer_panel")
         .css("width", `${s.width}px`)
-        .toggle(s.enabled && s.visible);
-    $("#outfit_viewer_toggle").toggle(s.enabled && !s.visible);
+        .toggle(s.visible);
+    $("#outfit_viewer_toggle").toggle(!s.visible);
     if (s.position) {
         panel.css({
             left: `${s.position.left}px`,
@@ -794,7 +801,7 @@ function buildPanel() {
     });
     $("#outfit_viewer_refresh").on("click", refresh);
     $("#outfit_viewer_lock").on("click", () => {
-        settings().locked = !settings().locked;
+        settings().autoSwitch = !settings().autoSwitch;
         ctx().saveSettingsDebounced();
         renderLock();
     });
@@ -834,9 +841,8 @@ function buildSettings() {
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
-                    <label class="checkbox_label"><input id="outfit_viewer_enabled" type="checkbox"> Enabled</label>
                     <label class="checkbox_label"><input id="outfit_viewer_auto" type="checkbox"> Switch automatically when an outfit is mentioned</label>
-                    <label class="checkbox_label"><input id="outfit_viewer_user" type="checkbox"> Also scan my own messages</label>
+                    <label class="checkbox_label"><input id="outfit_viewer_only_user" type="checkbox"> Only my own messages switch the outfit</label>
                     <label class="checkbox_label"><input id="outfit_viewer_desc_toggle" type="checkbox"> Show the outfit description under the image</label>
                     <label>Panel width: <span id="outfit_viewer_width_val"></span>px
                         <input id="outfit_viewer_width" type="range" min="150" max="700" step="10">
@@ -863,22 +869,17 @@ function buildSettings() {
         ctx().saveSettingsDebounced();
         applyLayout();
     };
-    $("#outfit_viewer_enabled")
-        .prop("checked", s.enabled)
-        .on("change", function () {
-            s.enabled = this.checked;
-            save();
-        });
     $("#outfit_viewer_auto")
         .prop("checked", s.autoSwitch)
         .on("change", function () {
             s.autoSwitch = this.checked;
             save();
+            renderLock();
         });
-    $("#outfit_viewer_user")
-        .prop("checked", s.scanUserMessages)
+    $("#outfit_viewer_only_user")
+        .prop("checked", s.onlyUserMessages)
         .on("change", function () {
-            s.scanUserMessages = this.checked;
+            s.onlyUserMessages = this.checked;
             save();
         });
     $("#outfit_viewer_desc_toggle")
@@ -959,6 +960,8 @@ jQuery(async () => {
     let streamTimer = null;
     eventSource.on(event_types.STREAM_TOKEN_RECEIVED, (text) => {
         if (streamTimer) return;
+        // Streaming is always the bot's reply.
+        if (settings().onlyUserMessages) return;
         streamTimer = setTimeout(() => {
             streamTimer = null;
             scanText(text);
