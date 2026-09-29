@@ -390,7 +390,10 @@ async function readPrompts(src) {
             const parsed = JSON.parse(raw);
             const params = parsed.sui_image_params || parsed;
             return {
-                prompt: typeof params.prompt === "string" ? params.prompt : "",
+                // SwarmUI keeps what was typed (with <comment:...> etc.) in original_prompt.
+                prompt:
+                    parsed.sui_extra_data?.original_prompt ||
+                    (typeof params.prompt === "string" ? params.prompt : ""),
                 negative:
                     params.negativeprompt || params.negative_prompt || params.negativePrompt || "",
             };
