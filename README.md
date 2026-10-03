@@ -42,6 +42,16 @@ SillyTavern can't list subfolders by itself, so this needs the included server p
 
 Without the plugin, only loose images in the folder are used.
 
+## Character pictures
+
+A second folder can hold pictures of characters, just for looking at: they're never switched by messages.
+
+1. Put the images in `SillyTavern/data/default-user/user/images/characters/` (or link a folder there, as above). Each image's filename is the character's name; variations (`Ringo (2).png`) and, with the server plugin, subfolders work the same as for outfits.
+2. The viewer loads `user/images/characters` by default. To use a different folder, go to Extensions → Outfit Viewer, type its name under **Character folder** and click **Load**.
+3. Click the 👤 button on the panel to flip it to the character list; click it again (now 👕) to go back to outfits.
+
+While the panel shows characters, the dropdown, scroll wheel, arrow keys and full-screen view all work on the characters, the lock is hidden, and no description is shown. Messages still switch the outfit quietly in the background, so flipping back shows whatever is being worn now. `/character Ringo` shows a character; `/character` alone goes back to outfits.
+
 ## Outfit names
 
 - An image's outfit name is its filename without the extension: `Witch.png` → "Witch".

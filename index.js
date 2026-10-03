@@ -10,17 +10,26 @@ const defaults = {
     showDescription: true,
     // Folder name under SillyTavern's data/<user>/user/images/. Survives reloads, unlike the browser picker.
     serverFolder: "outfits",
+    // Character pictures, just for looking at: never switched by messages.
+    characterFolder: "characters",
+    // Which list the panel shows: "outfit" or "character".
+    mode: "outfit",
     width: 320,
     visible: true,
 };
 
 const ctx = () => SillyTavern.getContext();
 
-/** @type {{name: string, url: string}[]} */
-let outfits = [];
-let current = null;
-let folderName = "";
+// Two lists of images: outfits (switched by messages) and characters (picked by hand).
+const views = {
+    outfit: { items: [], current: null, label: "" },
+    character: { items: [], current: null, label: "" },
+};
 let pendingHandle = null;
+
+const characterMode = () => settings().mode === "character";
+const view = () => views[characterMode() ? "character" : "outfit"];
+const currentItem = () => view().items.find((o) => o.name === view().current);
 
 function settings() {
     const store = ctx().extensionSettings;
@@ -148,8 +157,8 @@ async function outfitName(file) {
 
 // ---------- loading a folder ----------
 
-function setOutfits(entries, label) {
-    outfits.forEach((o) =>
+function setItems(kind, entries, label) {
+    views[kind].items.forEach((o) =>
         o.images.forEach(
             (i) => i.url.startsWith("blob:") && URL.revokeObjectURL(i.url),
         ),
@@ -177,11 +186,14 @@ function setOutfits(entries, label) {
         }
         outfit.images.push(...urls.map((url) => ({ url })));
     }
-    outfits = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
-    folderName = label;
-    renderSelect();
+    const v = views[kind];
+    v.items = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+    v.label = label;
     renderStatus();
-    restoreForChat();
+    if (kind === "outfit") return restoreForChat();
+    // Characters: keep the one being looked at if it's still there.
+    if (!v.items.some((o) => o.name === v.current)) v.current = null;
+    if (characterMode()) show(v.current);
 }
 
 async function loadFiles(files, label) {
@@ -193,10 +205,10 @@ async function loadFiles(files, label) {
             urls: [URL.createObjectURL(file)],
         });
     }
-    setOutfits(entries, label);
+    setItems("outfit", entries, label);
 }
 
-async function loadFromServer(folder) {
+async function loadFromServer(folder, kind = "outfit") {
     // Cache-bust so an image replaced under the same name shows its new version.
     const stamp = Date.now();
     const urlOf = (file) =>
@@ -234,8 +246,8 @@ async function loadFromServer(folder) {
                     urls: [urlOf(f)],
                 }));
         }
-        pendingHandle = null;
-        setOutfits(entries, `user/images/${folder}`);
+        if (kind === "outfit") pendingHandle = null;
+        setItems(kind, entries, `user/images/${folder}`);
     } catch (err) {
         console.error("[Outfit Viewer]", err);
         $("#outfit_viewer_status").text(
@@ -287,6 +299,11 @@ async function reconnect() {
 async function refresh() {
     const icon = $("#outfit_viewer_refresh").addClass("fa-spin");
     try {
+        if (characterMode()) {
+            const folder = settings().characterFolder.trim();
+            if (folder) await loadFromServer(folder, "character");
+            return;
+        }
         const serverFolder = settings().serverFolder.trim();
         if (serverFolder) return await loadFromServer(serverFolder);
         const handle = window.showDirectoryPicker
@@ -307,6 +324,8 @@ async function refresh() {
 }
 
 async function restoreFolder() {
+    const characterFolder = settings().characterFolder.trim();
+    if (characterFolder) await loadFromServer(characterFolder, "character");
     const serverFolder = settings().serverFolder.trim();
     if (serverFolder) return loadFromServer(serverFolder);
     if (!window.showDirectoryPicker) return renderStatus();
@@ -330,7 +349,7 @@ function randomIndex(outfit) {
 
 // Step through the current outfit's images in order.
 function cycleImage(delta) {
-    const outfit = outfits.find((o) => o.name === current);
+    const outfit = currentItem();
     if (!outfit || outfit.images.length < 2) return;
     outfit.index =
         (outfit.index + delta + outfit.images.length) % outfit.images.length;
@@ -504,6 +523,8 @@ function renderLock() {
     const locked = !settings().autoSwitch;
     $("#outfit_viewer_auto").prop("checked", !locked);
     $("#outfit_viewer_lock")
+        // Characters are never switched by messages, so the lock means nothing there.
+        .toggle(!characterMode())
         .toggleClass("fa-lock", locked)
         .toggleClass("fa-lock-open", !locked)
         .toggleClass("outfit_viewer_locked", locked)
@@ -518,48 +539,80 @@ function renderImage(outfit) {
         .toggle(!!outfit);
     const many = !!outfit && outfit.images.length > 1;
     // ⇅ steps through this outfit's images; ⇄ (single image) moves on to the next outfit.
+    const noun = characterMode() ? "character" : "outfit";
     $("#outfit_viewer_cycle")
-        .toggle(outfits.length > 1 || many)
+        .toggle(view().items.length > 1 || many)
         .toggleClass("fa-rotate-90", many)
-        .attr("title", many ? "Next image of this outfit (↑/↓)" : "Next outfit (←/→)");
+        .attr("title", many ? `Next image of this ${noun} (↑/↓)` : `Next ${noun} (←/→)`);
     $("#outfit_viewer_count")
         .toggle(many)
         .text(many ? `${outfit.index + 1}/${outfit.images.length}` : "");
     renderDescription(outfit);
 }
 
-function show(name, { persist = true } = {}) {
+function findIn(items, name) {
     const wanted = String(name).toLowerCase();
-    const outfit =
-        outfits.find((o) => o.name.toLowerCase() === wanted) ??
-        outfits.find((o) => o.keys.some((k) => k.toLowerCase() === wanted));
-    // Arriving at an outfit starts on a random image; staying on it keeps the current one.
-    if (outfit && outfit.name !== current) outfit.index = randomIndex(outfit);
-    current = outfit ? outfit.name : null;
-    $("#outfit_viewer_empty").toggle(!outfit);
-    $("#outfit_viewer_select").val(current ?? "");
-    renderImage(outfit);
-    if (persist) {
-        const { chatMetadata, saveMetadataDebounced } = ctx();
-        if (chatMetadata) {
-            chatMetadata[MODULE] = current;
-            saveMetadataDebounced();
-        }
+    return (
+        items.find((o) => o.name.toLowerCase() === wanted) ??
+        items.find((o) => o.keys.some((k) => k.toLowerCase() === wanted))
+    );
+}
+
+// The worn outfit belongs to the chat, so it's saved with it.
+function saveOutfitForChat() {
+    const { chatMetadata, saveMetadataDebounced } = ctx();
+    if (chatMetadata) {
+        chatMetadata[MODULE] = views.outfit.current;
+        saveMetadataDebounced();
     }
+}
+
+function show(name, { persist = true } = {}) {
+    const v = view();
+    const item = findIn(v.items, name);
+    // Arriving at an item starts on a random image; staying on it keeps the current one.
+    if (item && item.name !== v.current) item.index = randomIndex(item);
+    v.current = item ? item.name : null;
+    $("#outfit_viewer_empty")
+        .text(characterMode() ? "No character" : "No outfit")
+        .toggle(!item);
+    $("#outfit_viewer_select").val(v.current ?? "");
+    renderImage(item);
+    if (persist && !characterMode()) saveOutfitForChat();
 }
 
 async function renderDescription(outfit) {
     const box = $("#outfit_viewer_desc");
-    if (!outfit || !settings().showDescription) return box.hide().text("");
+    // Character pictures have no outfit description to show.
+    if (!outfit || characterMode() || !settings().showDescription)
+        return box.hide().text("");
     const text = await descriptionOf(outfit);
     // A later switch may have happened while this one was loading.
-    if (current !== outfit.name) return;
+    if (view().current !== outfit.name) return;
     box.text(text).toggle(!!text).scrollTop(0);
 }
 
 function restoreForChat() {
     const saved = ctx().chatMetadata?.[MODULE];
+    if (characterMode()) {
+        views.outfit.current = findIn(views.outfit.items, saved ?? "")?.name ?? null;
+        return;
+    }
     show(saved ?? null, { persist: false });
+}
+
+// Flip the panel between the outfit list and the character list.
+function setMode(mode) {
+    settings().mode = mode;
+    ctx().saveSettingsDebounced();
+    renderSelect();
+    renderLock();
+    $("#outfit_viewer_mode")
+        .toggleClass("fa-user", mode !== "character")
+        .toggleClass("fa-shirt", mode === "character")
+        .attr("title", mode === "character" ? "Show outfits" : "Show characters");
+    $("#outfit_viewer_select").attr("title", mode === "character" ? "Pick a character" : "Pick an outfit");
+    show(view().current, { persist: false });
 }
 
 function escapeRegex(s) {
@@ -570,7 +623,7 @@ function escapeRegex(s) {
 // ("Fluffy witch" beats "witch").
 function findOutfit(text) {
     let best = null;
-    for (const o of outfits) {
+    for (const o of views.outfit.items) {
         for (const key of o.keys) {
             const re = new RegExp(
                 `(?<![\\w])${escapeRegex(key)}(?![\\w])`,
@@ -593,15 +646,16 @@ function findOutfit(text) {
 }
 
 function step(delta) {
-    if (!outfits.length) return;
-    const index = outfits.findIndex((o) => o.name === current);
+    const items = view().items;
+    if (!items.length) return;
+    const index = items.findIndex((o) => o.name === view().current);
     const next =
         index === -1
             ? delta > 0
                 ? 0
-                : outfits.length - 1
-            : (index + delta + outfits.length) % outfits.length;
-    show(outfits[next].name);
+                : items.length - 1
+            : (index + delta + items.length) % items.length;
+    show(items[next].name);
 }
 
 // Status blocks (ID cards, duties, quests) can name outfits that aren't being worn right now.
@@ -614,9 +668,13 @@ function stripStatusBlocks(text) {
 
 function scanText(text) {
     const s = settings();
-    if (!s.autoSwitch || !text || !outfits.length) return;
+    if (!s.autoSwitch || !text || !views.outfit.items.length) return;
     const found = findOutfit(stripStatusBlocks(text));
-    if (found && found !== current) show(found);
+    if (!found || found === views.outfit.current) return;
+    if (!characterMode()) return show(found);
+    // Looking at a character: keep track of the outfit quietly, for when the panel flips back.
+    views.outfit.current = found;
+    saveOutfitForChat();
 }
 
 function scanMessage(id) {
@@ -630,14 +688,15 @@ function scanMessage(id) {
 // ---------- UI ----------
 
 function renderSelect() {
+    const { items, current } = view();
     const select = $("#outfit_viewer_select").empty();
     select.append(
         $("<option>")
             .val("")
-            .text(outfits.length ? "— none —" : "— no folder —"),
+            .text(items.length ? "— none —" : "— no folder —"),
     );
     // Show every key, so it's clear which words bring each outfit up.
-    for (const o of outfits) {
+    for (const o of items) {
         const count = o.images.length > 1 ? ` (${o.images.length})` : "";
         select.append(
             $("<option>")
@@ -649,18 +708,25 @@ function renderSelect() {
 }
 
 function renderStatus() {
+    renderSelect();
     const status = $("#outfit_viewer_status");
     const reconnectBtn = $("#outfit_viewer_reconnect");
+    const { outfit, character } = views;
     if (pendingHandle) {
         status.text(`Folder "${pendingHandle.name}" needs permission again.`);
         reconnectBtn.show();
-    } else if (folderName) {
-        status.text(`Folder "${folderName}": ${outfits.length} outfit(s).`);
+    } else if (outfit.label) {
+        status.text(`Folder "${outfit.label}": ${outfit.items.length} outfit(s).`);
         reconnectBtn.hide();
     } else {
         status.text("No folder selected.");
         reconnectBtn.hide();
     }
+    $("#outfit_viewer_character_status").text(
+        character.label
+            ? `Folder "${character.label}": ${character.items.length} character(s).`
+            : "No character folder loaded.",
+    );
 }
 
 function applyLayout() {
@@ -787,6 +853,7 @@ function buildPanel() {
                 <div class="outfit_viewer_grip fa-solid fa-grip-vertical" title="Drag to move · double-click to reset"></div>
                 <select id="outfit_viewer_select" title="Pick an outfit"></select>
                 <small id="outfit_viewer_count"></small>
+                <div id="outfit_viewer_mode" class="outfit_viewer_icon fa-solid fa-user" title="Show characters"></div>
                 <div id="outfit_viewer_lock" class="outfit_viewer_icon fa-solid fa-lock-open" title="Lock this outfit: stop messages from switching it"></div>
                 <div id="outfit_viewer_cycle" class="outfit_viewer_icon fa-solid fa-arrow-right-arrow-left" title="Next outfit (←/→)"></div>
                 <div id="outfit_viewer_refresh" class="outfit_viewer_icon fa-solid fa-rotate" title="Reload folder"></div>
@@ -803,6 +870,9 @@ function buildPanel() {
         show(this.value || null);
     });
     $("#outfit_viewer_refresh").on("click", refresh);
+    $("#outfit_viewer_mode").on("click", () =>
+        setMode(characterMode() ? "outfit" : "character"),
+    );
     $("#outfit_viewer_lock").on("click", () => {
         settings().autoSwitch = !settings().autoSwitch;
         ctx().saveSettingsDebounced();
@@ -811,7 +881,7 @@ function buildPanel() {
     renderLock();
     $("#outfit_viewer_cycle")
         .on("click", () => {
-            const outfit = outfits.find((o) => o.name === current);
+            const outfit = currentItem();
             if (outfit && outfit.images.length > 1) cycleImage(1);
             else step(1);
         })
@@ -861,6 +931,12 @@ function buildSettings() {
                         <div id="outfit_viewer_reconnect" class="menu_button">Reconnect folder</div>
                     </div>
                     <small id="outfit_viewer_status"></small>
+                    <label for="outfit_viewer_character_folder">Character folder (in data/default-user/user/images/), shown with the 👤 button on the panel, never switched by messages:</label>
+                    <div class="flex-container">
+                        <input id="outfit_viewer_character_folder" class="text_pole flex1" type="text" placeholder="e.g. characters">
+                        <div id="outfit_viewer_character_load" class="menu_button">Load</div>
+                    </div>
+                    <small id="outfit_viewer_character_status"></small>
                     <input id="outfit_viewer_file_input" type="file" webkitdirectory multiple hidden>
                 </div>
             </div>
@@ -890,7 +966,7 @@ function buildSettings() {
         .on("change", function () {
             s.showDescription = this.checked;
             save();
-            renderDescription(outfits.find((o) => o.name === current));
+            renderDescription(currentItem());
         });
     $("#outfit_viewer_width_val").text(s.width);
     $("#outfit_viewer_width")
@@ -913,6 +989,19 @@ function buildSettings() {
             if (e.key === "Enter") loadServer();
         });
     $("#outfit_viewer_server_load").on("click", loadServer);
+    const loadCharacters = () => {
+        s.characterFolder = String(
+            $("#outfit_viewer_character_folder").val() ?? "",
+        ).trim();
+        ctx().saveSettingsDebounced();
+        if (s.characterFolder) loadFromServer(s.characterFolder, "character");
+    };
+    $("#outfit_viewer_character_folder")
+        .val(s.characterFolder)
+        .on("keydown", (e) => {
+            if (e.key === "Enter") loadCharacters();
+        });
+    $("#outfit_viewer_character_load").on("click", loadCharacters);
     $("#outfit_viewer_pick").on("click", () => {
         // Picking a local folder takes over from the server folder.
         s.serverFolder = "";
@@ -943,8 +1032,32 @@ function registerCommand() {
                 }),
             ],
             callback: (_args, value) => {
+                if (characterMode()) setMode("outfit");
                 show(String(value ?? "").trim() || null);
-                return current ?? "";
+                return views.outfit.current ?? "";
+            },
+        }),
+    );
+    SlashCommandParser.addCommandObject(
+        SlashCommand.fromProps({
+            name: "character",
+            helpString:
+                "Show a character's picture in the Outfit Viewer panel. No argument goes back to outfits.",
+            unnamedArgumentList: [
+                SlashCommandArgument.fromProps({
+                    description: "character name",
+                    isRequired: false,
+                }),
+            ],
+            callback: (_args, value) => {
+                const name = String(value ?? "").trim();
+                if (!name) {
+                    setMode("outfit");
+                    return "";
+                }
+                setMode("character");
+                show(name);
+                return views.character.current ?? "";
             },
         }),
     );
@@ -956,7 +1069,7 @@ jQuery(async () => {
     buildPanel();
     buildSettings();
     applyLayout();
-    renderSelect();
+    setMode(settings().mode === "character" ? "character" : "outfit");
     registerCommand();
 
     const { eventSource, event_types } = ctx();
