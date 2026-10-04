@@ -69,5 +69,6 @@ While the panel shows characters, the dropdown, scroll wheel, arrow keys and ful
 - The ↻ button re-reads the folder, picking up renamed, added or replaced images without reloading the page.
 - With the mouse over the panel, the scroll wheel or the left/right arrow keys flip to the previous/next outfit.
 - Drag the panel by its header (the grip icon) to move it; double-click the header to put it back in the top-right corner.
-- `/outfit Name` shows an outfit; `/outfit` with no name clears it.
+- `/outfit Name` shows an outfit; `/outfit` with no name goes back to the last image shown.
 - The current outfit is saved per chat.
+- The panel is never empty once something has been shown: on launch, in a chat with no saved outfit, or after clearing, it shows the last image shown in that mode (outfit or character), the same picture of it.

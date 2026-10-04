@@ -14,6 +14,8 @@ const defaults = {
     characterFolder: "characters",
     // Which list the panel shows: "outfit" or "character".
     mode: "outfit",
+    // The last image shown in each mode, shown again on launch or whenever there's nothing else.
+    last: { outfit: null, character: null },
     width: 320,
     visible: true,
 };
@@ -28,7 +30,8 @@ const views = {
 let pendingHandle = null;
 
 const characterMode = () => settings().mode === "character";
-const view = () => views[characterMode() ? "character" : "outfit"];
+const modeKey = () => (characterMode() ? "character" : "outfit");
+const view = () => views[modeKey()];
 const currentItem = () => view().items.find((o) => o.name === view().current);
 
 function settings() {
@@ -36,7 +39,7 @@ function settings() {
     // Fill in missing defaults in place; replacing the object would orphan earlier references.
     store[MODULE] ??= {};
     for (const [key, value] of Object.entries(defaults)) {
-        if (store[MODULE][key] === undefined) store[MODULE][key] = value;
+        if (store[MODULE][key] === undefined) store[MODULE][key] = structuredClone(value);
     }
     // Older versions had a separate lock, an Enabled box and a user-message box.
     const s = store[MODULE];
@@ -533,7 +536,16 @@ function renderLock() {
             : "Lock this outfit: stop messages from switching it");
 }
 
+function rememberLast(outfit) {
+    const s = settings();
+    const prev = s.last[modeKey()];
+    if (prev?.name === outfit.name && prev?.index === outfit.index) return;
+    s.last[modeKey()] = { name: outfit.name, index: outfit.index };
+    ctx().saveSettingsDebounced();
+}
+
 function renderImage(outfit) {
+    if (outfit) rememberLast(outfit);
     $("#outfit_viewer_img")
         .attr("src", outfit ? outfit.images[outfit.index].url : "")
         .toggle(!!outfit);
@@ -569,9 +581,15 @@ function saveOutfitForChat() {
 
 function show(name, { persist = true } = {}) {
     const v = view();
-    const item = findIn(v.items, name);
+    let item = findIn(v.items, name ?? "");
     // Arriving at an item starts on a random image; staying on it keeps the current one.
     if (item && item.name !== v.current) item.index = randomIndex(item);
+    // Nothing to show: fall back to the last image shown in this mode, on the same picture.
+    if (!item) {
+        const last = settings().last[modeKey()];
+        item = last ? findIn(v.items, last.name) : null;
+        if (item && last.index < item.images.length) item.index = last.index;
+    }
     v.current = item ? item.name : null;
     $("#outfit_viewer_empty")
         .text(characterMode() ? "No character" : "No outfit")
